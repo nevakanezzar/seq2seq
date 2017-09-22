@@ -94,10 +94,17 @@ class BasicSeq2Seq(Seq2SeqModel):
       batch_size = self.params["inference.beam_search.beam_width"]
 
     target_start_id = self.target_vocab_info.special_vocab.SEQUENCE_START
-    helper_infer = tf_decode_helper.GreedyEmbeddingHelper(
+    if self.params["sampler"]=="argmax":
+      helper_infer = tf_decode_helper.GreedyEmbeddingHelper(
         embedding=self.target_embedding,
         start_tokens=tf.fill([batch_size], target_start_id),
         end_token=self.target_vocab_info.special_vocab.SEQUENCE_END)
+    else:
+      helper_infer = tf_decode_helper.TempSamplingEmbeddingHelper(
+        embedding=self.target_embedding,
+        start_tokens=tf.fill([batch_size], target_start_id),
+        end_token=self.target_vocab_info.special_vocab.SEQUENCE_END,
+        temp=self.params["temp"])
     decoder_initial_state = bridge()
     return decoder(decoder_initial_state, helper_infer)
 

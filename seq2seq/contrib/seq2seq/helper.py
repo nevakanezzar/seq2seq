@@ -51,6 +51,7 @@ __all__ = [
     "Helper",
     "TrainingHelper",
     "GreedyEmbeddingHelper",
+    "SampledEmbeddingHelper",
     "CustomHelper",
     "ScheduledEmbeddingTrainingHelper",
     "ScheduledOutputTrainingHelper",
@@ -497,12 +498,174 @@ class GreedyEmbeddingHelper(Helper):
     if not isinstance(outputs, ops.Tensor):
       raise TypeError("Expected outputs to be a single Tensor, got: %s" %
                       type(outputs))
+
+    # TEMP
+
     sample_ids = math_ops.cast(
-        math_ops.argmax(outputs, axis=-1), dtypes.int32)
+      math_ops.argmax(outputs, axis=-1), dtypes.int32)
+
     return sample_ids
 
   def next_inputs(self, time, outputs, state, sample_ids, name=None):
     """next_inputs_fn for GreedyEmbeddingHelper."""
+    del time, outputs  # unused by next_inputs_fn
+    finished = math_ops.equal(sample_ids, self._end_token)
+    all_finished = math_ops.reduce_all(finished)
+    next_inputs = control_flow_ops.cond(
+        all_finished,
+        # If we're finished, the next_inputs value doesn't matter
+        lambda: self._start_inputs,
+        lambda: self._embedding_fn(sample_ids))
+    return (finished, next_inputs, state)
+
+
+### ADDED
+
+class SampledEmbeddingHelper(Helper):
+  """A helper for use during inference.
+
+  Samples the multinomial of the output (treated as logits) to get more 
+  linguistic diversity and passes the result through an embedding layer 
+  to get the next input.
+  """
+
+  def __init__(self, embedding, start_tokens, end_token):
+    """Initializer.
+
+    Args:
+      embedding: A callable that takes a vector tensor of `ids` (sampled ids),
+        or the `params` argument for `embedding_lookup`.
+      start_tokens: `int32` vector shaped `[batch_size]`, the start tokens.
+      end_token: `int32` scalar, the token that marks end of decoding.
+
+    Raises:
+      ValueError: if `sequence_length` is not a 1D tensor.
+    """
+    if callable(embedding):
+      self._embedding_fn = embedding
+    else:
+      self._embedding_fn = (
+          lambda ids: embedding_ops.embedding_lookup(embedding, ids))
+
+    self._start_tokens = ops.convert_to_tensor(
+        start_tokens, dtype=dtypes.int32, name="start_tokens")
+    self._end_token = ops.convert_to_tensor(
+        end_token, dtype=dtypes.int32, name="end_token")
+    if self._start_tokens.get_shape().ndims != 1:
+      raise ValueError("start_tokens must be a vector")
+    self._batch_size = array_ops.size(start_tokens)
+    if self._end_token.get_shape().ndims != 0:
+      raise ValueError("end_token must be a scalar")
+    self._start_inputs = self._embedding_fn(self._start_tokens)
+
+  @property
+  def batch_size(self):
+    return self._batch_size
+
+  def initialize(self, name=None):
+    finished = array_ops.tile([False], [self._batch_size])
+    return (finished, self._start_inputs)
+
+  def sample(self, time, outputs, state, name=None):
+    """sample for SampledEmbeddingHelper."""
+    del time, state  # unused by sample_fn
+    # Outputs are logits, use random_ops.multinomial to sample ids
+    if not isinstance(outputs, ops.Tensor):
+      raise TypeError("Expected outputs to be a single Tensor, got: %s" %
+                      type(outputs))
+
+    sample_ids2 = math_ops.cast(
+        random_ops.multinomial(outputs, 1)
+        , dtypes.int32
+      )
+    sample_ids = array_ops.reshape(sample_ids2,[-1])
+
+    return sample_ids
+
+  def next_inputs(self, time, outputs, state, sample_ids, name=None):
+    """next_inputs_fn for SampledEmbeddingHelper."""
+    del time, outputs  # unused by next_inputs_fn
+    finished = math_ops.equal(sample_ids, self._end_token)
+    all_finished = math_ops.reduce_all(finished)
+    next_inputs = control_flow_ops.cond(
+        all_finished,
+        # If we're finished, the next_inputs value doesn't matter
+        lambda: self._start_inputs,
+        lambda: self._embedding_fn(sample_ids))
+    return (finished, next_inputs, state)
+
+
+class TempSamplingEmbeddingHelper(Helper):
+  """A helper for use during inference.
+
+  Samples the multinomial of the output (treated as logits) to get more 
+  linguistic diversity and passes the result through an embedding layer 
+  to get the next input.
+  """
+
+  def __init__(self, embedding, start_tokens, end_token, temp):
+    """Initializer.
+
+    Args:
+      embedding: A callable that takes a vector tensor of `ids` (sampled ids),
+        or the `params` argument for `embedding_lookup`.
+      start_tokens: `int32` vector shaped `[batch_size]`, the start tokens.
+      end_token: `int32` scalar, the token that marks end of decoding.
+
+    Raises:
+      ValueError: if `sequence_length` is not a 1D tensor.
+    """
+    if callable(embedding):
+      self._embedding_fn = embedding
+    else:
+      self._embedding_fn = (
+          lambda ids: embedding_ops.embedding_lookup(embedding, ids))
+
+    self._start_tokens = ops.convert_to_tensor(
+        start_tokens, dtype=dtypes.int32, name="start_tokens")
+    self._end_token = ops.convert_to_tensor(
+        end_token, dtype=dtypes.int32, name="end_token")
+    if self._start_tokens.get_shape().ndims != 1:
+      raise ValueError("start_tokens must be a vector")
+    self._batch_size = array_ops.size(start_tokens)
+    if self._end_token.get_shape().ndims != 0:
+      raise ValueError("end_token must be a scalar")
+    self._start_inputs = self._embedding_fn(self._start_tokens)
+    self.temp = temp #ops.convert_to_tensor([temp],dtype=dtypes.float32,name="temp")
+
+  @property
+  def batch_size(self):
+    return self._batch_size
+
+  def initialize(self, name=None):
+    finished = array_ops.tile([False], [self._batch_size])
+    return (finished, self._start_inputs)
+
+  def sample(self, time, outputs, state, name=None):
+    """sample for SampledEmbeddingHelper."""
+    del time, state  # unused by sample_fn
+    # Outputs are logits, use random_ops.multinomial to sample ids
+    if not isinstance(outputs, ops.Tensor):
+      raise TypeError("Expected outputs to be a single Tensor, got: %s" %
+                      type(outputs))
+
+    outputs2 = math_ops.div(math_ops.exp(outputs),self.temp)
+    outputs3 = math_ops.div(outputs2,math_ops.reduce_sum(outputs2,axis=1,keep_dims=True))
+    outputs4 = math_ops.log(outputs3) - math_ops.log(math_ops.subtract(1.0,outputs3))
+    sample_ids2 = math_ops.cast(
+        random_ops.multinomial(outputs4, 1)
+        , dtypes.int32
+      )
+    sample_ids = array_ops.reshape(sample_ids2,[-1])
+
+    #with open("log.txt","w") as f:
+    #  f.write(",".join([str(outputs.shape), str(outputs2.shape), str(outputs3.shape), str(sample_ids2.shape), str(sample_ids.shape), 
+    #                    str(outputs), str(outputs2), str(outputs3), str(sample_ids2), str(sample_ids),str(self.temp)]))
+
+    return sample_ids
+
+  def next_inputs(self, time, outputs, state, sample_ids, name=None):
+    """next_inputs_fn for SampledEmbeddingHelper."""
     del time, outputs  # unused by next_inputs_fn
     finished = math_ops.equal(sample_ids, self._end_token)
     all_finished = math_ops.reduce_all(finished)

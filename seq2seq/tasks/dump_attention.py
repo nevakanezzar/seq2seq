@@ -23,7 +23,9 @@ from __future__ import unicode_literals
 import os
 
 import numpy as np
-from matplotlib import pyplot as plt
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 import tensorflow as tf
 from tensorflow import gfile

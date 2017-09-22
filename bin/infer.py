@@ -53,6 +53,10 @@ tf.flags.DEFINE_string("checkpoint_path", None,
                        """Full path to the checkpoint to be loaded. If None,
                        the latest checkpoint in the model dir is used.""")
 tf.flags.DEFINE_integer("batch_size", 32, "the train/dev batch size")
+tf.flags.DEFINE_string("sampler","argmax","""Defines how to pick a token
+                       during inference, either (default) \'argmax\', or \'multinomial\'""")
+tf.flags.DEFINE_float("temp",0.000000000001,"""Defines temperature for temperataure
+                     sampling. Closer to 0 means closer to argmax.""")
 
 FLAGS = tf.flags.FLAGS
 
@@ -84,6 +88,8 @@ def main(_argv):
   model_cls = locate(train_options.model_class) or \
     getattr(models, train_options.model_class)
   model_params = train_options.model_params
+  model_params["sampler"]=FLAGS.sampler
+  model_params["temp"]=FLAGS.temp
   model_params = _deep_merge_dict(
       model_params, _maybe_load_yaml(FLAGS.model_params))
   model = model_cls(
